@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>コンパスでもようをかこう</title>
+<style>
+  html,body{margin:0;height:100%;background:#e9e6da;font-family:"Hiragino Maru Gothic ProN","Yu Gothic",sans-serif;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none}
+  #bar{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;padding:6px 10px;background:#fff;border-bottom:2px solid #ddd}
+  #bar .q{font-weight:bold;font-size:17px;flex-basis:100%;color:#333;line-height:1.3}
+  .row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  #tabs{flex-basis:100%}
+  button{font-size:17px;padding:8px 14px;border:2px solid #3a7;border-radius:12px;background:#fff;color:#185;font-weight:bold;min-height:44px;font-family:inherit}
+  button.on{background:#3a7;color:#fff}
+  #tabs button{border-color:#e60;color:#c50;padding:6px 12px}
+  #tabs button.on{background:#e60;color:#fff}
+  .tool{border-color:#47c;color:#247}
+  .tool.on{background:#47c;color:#fff}
+  .act{border-color:#888;color:#444}
+  .act.on{background:#666;color:#fff}
+  button:active{transform:scale(.96)}
+  #pal{display:flex;gap:6px;align-items:center;padding:0 6px}
+  #pal button{width:40px;height:40px;min-height:0;padding:0;border-radius:50%;border:3px solid #bbb;font-size:18px;color:#666}
+  #pal button.on{border-color:#222;box-shadow:0 0 0 3px #ffd54a}
+  #c{position:absolute;left:0;width:100%;touch-action:none}
+  #toast{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;background:#333;color:#fff;padding:10px 18px;border-radius:20px;font-size:18px;opacity:0;transition:opacity .25s;pointer-events:none;max-width:90%;text-align:center}
+  #toast.show{opacity:.92}
+</style>
+</head>
+<body>
+<div id="bar">
+  <div class="row" style="flex-basis:100%;flex-wrap:nowrap"><button id="fold" class="act">▲ メニューをしまう</button><div class="q" id="qtext" style="flex:1"></div></div>
+  <div id="menu" style="display:contents">
+  <div id="tabs" class="row"></div>
+  <div class="row">
+    <button class="tool on" data-tool="compass">🧭 コンパス</button>
+    <button class="tool" data-tool="ruler">📏 じょうぎ</button>
+    <button class="tool" data-tool="fill">🪣 ぬる</button>
+    <div id="pal"></div>
+  </div>
+  <div class="row">
+    <button id="pen" class="act on">✏️ 書く：ON</button>
+    <button id="undo" class="act">↩ もどす</button>
+    <button id="clear" class="act">🗑 ぜんぶ消す</button>
+    <button id="snap" class="act on">🧲 吸いつき</button>
+    <button id="hint" class="act">🎯 ヒント</button>
+    <button id="cut" class="act" style="display:none">✂ わくでカット</button>
+    <button id="home" class="act">🧭 コンパスをもどす</button>
+    <button id="save" class="act">💾 ほぞん</button>
+    <button id="help" class="act">？ 使い方</button>
+  </div>
+  </div>
+</div>
+<canvas id="c"></canvas>
+<div id="toast"></div>
+<script>
+(() => {
+const W = 1120, H = 640, G = 40, LEG = 200, F = 2, FW = W*F, FH = H*F, TAU = Math.PI*2;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const bar = document.getElementById('bar');
+let s = 1, ox = 0, oy = 0, dpr = window.devicePixelRatio || 1;
+
+// 線の絵（ぬり絵の境目に使う）と、ぬった色の層
+const lineCv = document.createElement('canvas'); lineCv.width = FW; lineCv.height = FH;
+const lctx = lineCv.getContext('2d', {willReadFrequently:true});
+const fillCv = document.createElement('canvas'); fillCv.width = FW; fillCv.height = FH;
+const fctx = fillCv.getContext('2d');
+const fillData = fctx.createImageData(FW, FH);
+
+// ================= お手本データ（めもりの単位で書く） =================
+const gp = (x,y) => ({x:x*G, y:y*G});
+const circ = (x,y,r,note) => ({type:'circle', c:gp(x,y), r:r*G, rg:r, note});
+const rectLines = (x0,y0,x1,y1,text) => ({type:'lines', text,
+  segs:[[x0,y0,x1,y0],[x1,y0,x1,y1],[x1,y1,x0,y1],[x0,y1,x0,y0]].map(q => ({a:gp(q[0],q[1]), b:gp(q[2],q[3])}))});
+const flowerPts = [0,1,5,3,2,4].map(k => [14 + 3*Math.cos(k*Math.PI/3), 8 + 3*Math.sin(k*Math.PI/3)]);
+const X_NOTE = '円と円が まじわる点に はりをさして、おなじ はんけいで円をかこう';
+const SAMPLES = [
+  null,
+  { name:'① 円のれんぞく', frame:null,
+    steps:[ rectLines(3,5,24,11,'📏 じょうぎで 長方形のわくを かこう（4本）'),
+            ...[6,9,12,15,18,21].map(x => circ(x,8,3)) ],
+    done:'🪣 で 好きないろを ぬってみよう' },
+  { name:'② レンズのつながり', frame:{x0:2,y0:5,x1:26,y1:11},
+    steps:[ rectLines(2,5,26,11,'📏 じょうぎで 長方形のわくを かこう（4本）'),
+            ...[6,14,22].flatMap(x => [circ(x,5,5), circ(x,11,5)]) ],
+    done:'✂ で わくから はみ出した線を かくして、🪣 で ぬってみよう' },
+  { name:'③ 四つ葉', frame:null,
+    steps:[ circ(14,8,4), circ(12,8,2), circ(16,8,2), circ(14,6,2), circ(14,10,2) ],
+    done:'🪣 で 花びらを ぬりわけてみよう' },
+  { name:'④ 花もよう', frame:null,
+    steps:[ circ(14,8,3,'まん中に はりをさして、はんけい3ますの円をかこう'),
+            circ(17,8,3,'円の上の点に はりをさして、おなじ はんけいで円をかこう'),
+            ...flowerPts.slice(1).map(p => circ(p[0],p[1],3,X_NOTE)) ],
+    done:'🪣 で 花びらを ぬってみよう' },
+];
+const PEN = ['#222','#d33','#e80','#2a2','#25c','#a3a'];
+const FILL = ['#f9c28a','#f7b3c6','#fff0cf','#a8dca0','#b7defa','#dcc2ee','#f5ee9b',null];
+
+// ================= 状態 =================
+let sample = null, actions = [], inters = [], stepInfo = [], celebrated = false;
+let tool = 'compass', penOn = true, snapOn = true, hintMode = 1, cutOn = false, drag = null;
+let penColor = PEN[0], fillColor = FILL[0];
+const C = {P:{x:80,y:600}, Q:{x:160,y:600}, side:-1};
+
+const dist = (a,b) => Math.hypot(a.x-b.x, a.y-b.y);
+const ang = (c,p) => Math.atan2(p.y-c.y, p.x-c.x);
+const norm = a => { while(a > Math.PI) a -= TAU; while(a < -Math.PI) a += TAU; return a; };
+const clampB = p => ({x:Math.max(0,Math.min(W,p.x)), y:Math.max(0,Math.min(H,p.y))});
+
+// ================= コンパスの形 =================
+function hingeOut(side){
+  const {P,Q} = C, d = Math.max(dist(P,Q),0.001), h = Math.sqrt(Math.max(LEG*LEG - d*d/4, 0));
+  const nx = -(Q.y-P.y)/d*side, ny = (Q.x-P.x)/d*side;
+  const kx = (P.x+Q.x)/2 + nx*(h+60), ky = (P.y+Q.y)/2 + ny*(h+60);
+  return kx < 0 || kx > W || ky < 0 || ky > H;
+}
+function geom(){
+  // かなめが画面の外に出そうなときは、コンパスの向きを反転する（かいている最中は反転しない）
+  if(!(drag && drag.kind === 'rot') && hingeOut(C.side) && !hingeOut(-C.side)) C.side = -C.side;
+  const {P,Q} = C, d = Math.max(dist(P,Q),0.001);
+  const u = {x:(Q.x-P.x)/d, y:(Q.y-P.y)/d};
+  const n = {x:-u.y*C.side, y:u.x*C.side};
+  const h = Math.sqrt(Math.max(LEG*LEG - d*d/4, 0));
+  const M = {x:(P.x+Q.x)/2, y:(P.y+Q.y)/2};
+  const hinge = {x:M.x+n.x*h, y:M.y+n.y*h};
+  const knob = {x:hinge.x+n.x*46, y:hinge.y+n.y*46};
+  return {d,hinge,knob,n,M};
+}
+
+// ================= 吸いつき（めもりの交点・円と円の交点） =================
+function circleInter(a,b){
+  const dx=b.c.x-a.c.x, dy=b.c.y-a.c.y, d=Math.hypot(dx,dy);
+  if(d<1e-6 || d>a.r+b.r || d<Math.abs(a.r-b.r)) return [];
+  const x=(a.r*a.r-b.r*b.r+d*d)/(2*d), h2=a.r*a.r-x*x; if(h2<0) return [];
+  const h=Math.sqrt(h2), mx=a.c.x+dx*x/d, my=a.c.y+dy*x/d;
+  return [{x:mx+dy*h/d, y:my-dx*h/d},{x:mx-dy*h/d, y:my+dx*h/d}];
+}
+function inArc(st,p){
+  if(Math.abs(st.sw) >= TAU-0.05) return true;
+  let t = (ang(st.c,p)-st.a0)*(st.sw<0?-1:1); t = ((t%TAU)+TAU)%TAU;
+  return t <= Math.abs(st.sw)+0.03 || t >= TAU-0.03;
+}
+function snapTo(p){
+  p = clampB(p);
+  if(!snapOn) return p;
+  let best = null, bd = 18;
+  for(const q of inters){ const dd = dist(p,q) - 6; if(dd < bd){ bd = dd; best = q; } }
+  const g = {x:Math.round(p.x/G)*G, y:Math.round(p.y/G)*G}, dg = dist(p,g);
+  if(dg < bd){ best = g; bd = dg; }
+  return best ? {x:best.x, y:best.y} : p;
+}
+
+// ================= 描画 =================
+function label(t,x,y,size,align,color,halo){
+  ctx.font = 'bold '+size+'px sans-serif'; ctx.textAlign = align||'left'; ctx.textBaseline = 'middle';
+  if(halo){ ctx.lineWidth = 5; ctx.strokeStyle = '#fff'; ctx.lineJoin = 'round'; ctx.strokeText(t,x,y); }
+  ctx.fillStyle = color||'#000'; ctx.fillText(t,x,y);
+}
+function drawStroke(c,st){
+  c.strokeStyle = st.col; c.lineWidth = st.w; c.lineCap = 'round'; c.beginPath();
+  if(st.t === 'line'){ c.moveTo(st.a.x,st.a.y); c.lineTo(st.b.x,st.b.y); }
+  else{
+    if(st.r < 0.5) return;
+    if(Math.abs(st.sw) >= TAU-1e-3) c.arc(st.c.x,st.c.y,st.r,0,TAU);
+    else c.arc(st.c.x,st.c.y,st.r,st.a0,st.a0+st.sw,st.sw<0);
+  }
+  c.stroke();
+}
+function clipFrame(c){
+  if(!(cutOn && sample && sample.frame)) return;
+  const f = sample.frame;
+  c.beginPath(); c.rect(f.x0*G-2, f.y0*G-2, (f.x1-f.x0)*G+4, (f.y1-f.y0)*G+4); c.clip();
+}
+function drawStrokes(c){
+  c.save(); clipFrame(c);
+  actions.forEach(a => { if(a.t !== 'fill') drawStroke(c,a); });
+  c.restore();
+}
+function drawGrid(c){
+  c.strokeStyle = '#b9e0ef'; c.lineWidth = 1; c.beginPath();
+  for(let x=0; x<=W; x+=G){ c.moveTo(x,0); c.lineTo(x,H); }
+  for(let y=0; y<=H; y+=G){ c.moveTo(0,y); c.lineTo(W,y); }
+  c.stroke();
+}
+function drawGuide(){
+  if(!sample) return;
+  const pulse = 18 + 3*Math.sin(Date.now()/200);
+  if(hintMode >= 2){
+    ctx.save(); ctx.setLineDash([8,8]); ctx.lineWidth = 3; ctx.lineCap = 'butt';
+    sample.steps.forEach((st,i) => {
+      const info = stepInfo[i] || {};
+      ctx.strokeStyle = info.done ? 'rgba(0,150,80,.35)' : 'rgba(230,110,0,.6)';
+      ctx.beginPath();
+      if(st.type === 'circle'){ ctx.arc(st.c.x,st.c.y,st.r,0,TAU); }
+      else st.segs.forEach(g => { ctx.moveTo(g.a.x,g.a.y); ctx.lineTo(g.b.x,g.b.y); });
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+  if(hintMode >= 1){
+    const k = stepInfo.findIndex(i => !i.done); if(k < 0) return;
+    const st = sample.steps[k], info = stepInfo[k];
+    ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(255,128,0,.9)';
+    const ring = p => { ctx.beginPath(); ctx.arc(p.x,p.y,pulse,0,TAU); ctx.stroke(); };
+    if(st.type === 'circle'){
+      ring(st.c);
+      label('はんけい '+st.rg+'ます', st.c.x+26, st.c.y-28, 16, 'left', '#c50', true);
+    } else {
+      st.segs.forEach((g,i) => { if(!info.segDone[i]){ ring(g.a); ring(g.b); } });
+    }
+  }
+}
+function drawCompass(){
+  const {P,Q} = C, g = geom();
+  ctx.save();
+  if(tool !== 'compass') ctx.globalAlpha = .3;
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = '#4a6fc7'; ctx.lineWidth = 11;
+  ctx.beginPath(); ctx.moveTo(P.x,P.y); ctx.lineTo(g.hinge.x,g.hinge.y); ctx.lineTo(Q.x,Q.y); ctx.stroke();
+  ctx.strokeStyle = '#8fa8e6'; ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.moveTo(P.x,P.y); ctx.lineTo(g.hinge.x,g.hinge.y); ctx.lineTo(Q.x,Q.y); ctx.stroke();
+  ctx.strokeStyle = '#4a6fc7'; ctx.lineWidth = 8;
+  ctx.beginPath(); ctx.moveTo(g.hinge.x,g.hinge.y); ctx.lineTo(g.knob.x,g.knob.y); ctx.stroke();
+  ctx.beginPath(); ctx.arc(g.knob.x,g.knob.y,17,0,7); ctx.fillStyle = '#f80'; ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = '#fff'; ctx.stroke();
+  ctx.beginPath(); ctx.arc(g.hinge.x,g.hinge.y,17,0,7); ctx.fillStyle = '#2c4a9a'; ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = '#fff'; ctx.stroke();
+  label('✥',g.hinge.x,g.hinge.y+1,20,'center','#fff');
+  label('↻',g.knob.x,g.knob.y+1,14,'center','#fff');
+  ctx.beginPath(); ctx.arc(P.x,P.y,10,0,7); ctx.fillStyle = '#e22'; ctx.fill();
+  ctx.beginPath(); ctx.arc(P.x,P.y,22,0,7); ctx.strokeStyle='rgba(220,40,40,.4)'; ctx.lineWidth=3; ctx.stroke();
+  ctx.beginPath(); ctx.arc(Q.x,Q.y,8,0,7); ctx.fillStyle = penColor; ctx.fill();
+  ctx.beginPath(); ctx.arc(Q.x,Q.y,22,0,7); ctx.strokeStyle='rgba(40,40,40,.35)'; ctx.lineWidth=3; ctx.stroke();
+  ctx.restore();
+  if(tool === 'compass'){
+    const r = g.d / G, txt = (Math.abs(r-Math.round(r)) < 0.05 ? Math.round(r) : r.toFixed(1)) + 'ます';
+    label(txt, g.M.x - g.n.x*18, g.M.y - g.n.y*18, 16, 'center', '#c50', true);
+  }
+}
+function drawBoard(){
+  ctx.fillStyle = '#e9e6da'; ctx.fillRect(-1000,-1000,W+2000,H+2000);
+  ctx.fillStyle = '#fffdf6'; ctx.fillRect(0,0,W,H);
+  ctx.drawImage(fillCv,0,0,W,H);
+  drawGrid(ctx);
+  drawStrokes(ctx);
+  drawGuide();
+  ctx.strokeStyle = '#999'; ctx.lineWidth = 2; ctx.strokeRect(0,0,W,H);
+}
+function tipPoint(){
+  if(!drag) return null;
+  if(drag.kind === 'Q') return C.Q;
+  if(drag.kind === 'P' || drag.kind === 'move') return C.P;
+  if(drag.kind === 'ruler') return drag.st.b;
+  return null;
+}
+function drawMagnifier(){
+  const tip = tipPoint(); if(!tip) return;
+  const Rr = 55, Z = 2.6, k = s*dpr;
+  const tx = (ox+tip.x*s)*dpr, ty = (oy+tip.y*s)*dpr, rad = Rr*k;
+  let cy = ty - 120*k; if(cy < rad) cy = ty + 120*k;
+  const src = rad/Z;
+  ctx.save(); ctx.setTransform(1,0,0,1,0,0);
+  ctx.beginPath(); ctx.arc(tx,cy,rad,0,7); ctx.clip();
+  ctx.fillStyle='#fff'; ctx.fillRect(tx-rad,cy-rad,2*rad,2*rad);
+  ctx.drawImage(cv, tx-src, ty-src, 2*src, 2*src, tx-rad, cy-rad, 2*rad, 2*rad);
+  ctx.restore();
+  ctx.save(); ctx.setTransform(1,0,0,1,0,0);
+  ctx.beginPath(); ctx.arc(tx,cy,rad,0,7); ctx.lineWidth = 4*dpr; ctx.strokeStyle='#333'; ctx.stroke();
+  ctx.lineWidth = dpr; ctx.strokeStyle='rgba(0,0,0,.5)';
+  ctx.beginPath(); ctx.moveTo(tx-rad,cy); ctx.lineTo(tx+rad,cy); ctx.moveTo(tx,cy-rad); ctx.lineTo(tx,cy+rad); ctx.stroke();
+  ctx.restore();
+}
+function render(){
+  ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,cv.width,cv.height);
+  ctx.setTransform(s*dpr,0,0,s*dpr,ox*dpr,oy*dpr);
+  drawBoard(); drawCompass();
+  drawMagnifier();
+}
+function resize(){
+  const bh = bar.offsetHeight;
+  const cw = innerWidth, ch = innerHeight - bh;
+  cv.style.top = bh+'px'; cv.style.height = ch+'px';
+  dpr = window.devicePixelRatio || 1;
+  cv.width = cw*dpr; cv.height = ch*dpr;
+  s = Math.min(cw/W, ch/H); ox = (cw-W*s)/2; oy = (ch-H*s)/2;
+  render();
+}
+addEventListener('resize', resize);
+
+// ================= ぬり絵（線に囲まれた場所をぬる） =================
+function rasterStroke(a){
+  lctx.save(); lctx.setTransform(F,0,0,F,0,0); clipFrame(lctx); drawStroke(lctx,a); lctx.restore();
+}
+function doFill(x,y,col){
+  const px = Math.floor(x*F), py = Math.floor(y*F);
+  if(px<0||py<0||px>=FW||py>=FH) return false;
+  const img = lctx.getImageData(0,0,FW,FH).data, seed = py*FW+px;
+  if(img[seed*4+3] >= 100) return false;
+  const mask = new Uint8Array(FW*FH), stack = new Int32Array(FW*FH);
+  let sp = 0; stack[sp++] = seed; mask[seed] = 1;
+  while(sp){
+    const i = stack[--sp], xx = i % FW;
+    let j;
+    if(xx > 0){ j = i-1; if(!mask[j] && img[j*4+3] < 100){ mask[j] = 1; stack[sp++] = j; } }
+    if(xx < FW-1){ j = i+1; if(!mask[j] && img[j*4+3] < 100){ mask[j] = 1; stack[sp++] = j; } }
+    if(i >= FW){ j = i-FW; if(!mask[j] && img[j*4+3] < 100){ mask[j] = 1; stack[sp++] = j; } }
+    if(i < FW*(FH-1)){ j = i+FW; if(!mask[j] && img[j*4+3] < 100){ mask[j] = 1; stack[sp++] = j; } }
+  }
+  const d = fillData.data;
+  let r=0,g=0,b=0,a=0;
+  if(col){ r = parseInt(col.slice(1,3),16); g = parseInt(col.slice(3,5),16); b = parseInt(col.slice(5,7),16); a = 255; }
+  const put = i => { const o = i*4; d[o]=r; d[o+1]=g; d[o+2]=b; d[o+3]=a; };
+  for(let i=0;i<mask.length;i++){
+    if(!mask[i]) continue;
+    put(i);
+    const xx = i % FW;
+    if(xx > 0 && !mask[i-1]) put(i-1);
+    if(xx < FW-1 && !mask[i+1]) put(i+1);
+    if(i >= FW && !mask[i-FW]) put(i-FW);
+    if(i < FW*(FH-1) && !mask[i+FW]) put(i+FW);
+  }
+  return true;
+}
+function rebuild(){
+  lctx.setTransform(1,0,0,1,0,0); lctx.clearRect(0,0,FW,FH);
+  fillData.data.fill(0);
+  actions.forEach(a => { if(a.t === 'fill') doFill(a.x,a.y,a.col); else rasterStroke(a); });
+  fctx.putImageData(fillData,0,0);
+  updateDerived();
+}
+
+// ================= 交点・お手本の達成チェック =================
+function stepProgress(st){
+  const arcs = actions.filter(a => a.t === 'arc'), lines = actions.filter(a => a.t === 'line');
+  if(st.type === 'circle'){
+    const bins = new Uint8Array(72), step = TAU/72;
+    arcs.forEach(a => {
+      if(dist(a.c,st.c) > 10 || Math.abs(a.r-st.r) > 8) return;
+      const n = Math.ceil(Math.min(Math.abs(a.sw),TAU)/step), sg = a.sw < 0 ? -1 : 1;
+      for(let k=0;k<=n;k++){ const t = (((a.a0 + sg*k*step) % TAU) + TAU) % TAU; bins[Math.min(71,Math.floor(t/step))] = 1; }
+    });
+    const cnt = bins.reduce((x,y) => x+y, 0);
+    return {done:cnt >= 68};
+  }
+  const segDone = st.segs.map(g => lines.some(l =>
+    (dist(l.a,g.a) < 12 && dist(l.b,g.b) < 12) || (dist(l.a,g.b) < 12 && dist(l.b,g.a) < 12)));
+  return {done:segDone.every(Boolean), segDone};
+}
+function updateDerived(){
+  const arcs = actions.filter(a => a.t === 'arc' && a.r > 2 && Math.abs(a.sw) > 0.05);
+  inters = [];
+  if(arcs.length <= 80){
+    for(let i=0;i<arcs.length;i++) for(let j=i+1;j<arcs.length;j++)
+      circleInter(arcs[i],arcs[j]).forEach(p => {
+        if(inArc(arcs[i],p) && inArc(arcs[j],p) && p.x>=0 && p.x<=W && p.y>=0 && p.y<=H && !inters.some(q => dist(q,p) < 2)) inters.push(p);
+      });
+  }
+  stepInfo = sample ? sample.steps.map(stepProgress) : [];
+  updateQ();
+  if(sample && stepInfo.length && stepInfo.every(i => i.done)){
+    if(!celebrated){ celebrated = true; toast('かんせい！ よくできました 🎉',3500); }
+  } else celebrated = false;
+}
+function updateQ(){
+  const q = document.getElementById('qtext');
+  if(!sample){ q.textContent = 'すきな もようを かこう。円と円が まじわる点に はりをさすと、きれいな もようになるよ。'; return; }
+  const total = stepInfo.length, done = stepInfo.filter(i => i.done).length, k = stepInfo.findIndex(i => !i.done);
+  let t;
+  if(k < 0) t = 'かんせい！ ' + sample.done;
+  else {
+    const st = sample.steps[k];
+    t = st.type === 'lines' ? st.text : (st.note || 'はりを ひかる印に さして、はんけい '+st.rg+'ます で 円を ぐるっと一まわり かこう');
+  }
+  q.textContent = sample.name + '　（' + done + '/' + total + '）　' + t;
+}
+
+// ================= 操作 =================
+function toLogical(e){
+  const r = cv.getBoundingClientRect();
+  return {x:(e.clientX - r.left - ox)/s, y:(e.clientY - r.top - oy)/s};
+}
+cv.addEventListener('pointerdown', e => {
+  drag = null;
+  const p = toLogical(e);
+  if(tool === 'fill'){
+    if(p.x < 0 || p.y < 0 || p.x > W || p.y > H) return;
+    if(doFill(p.x,p.y,fillColor)){
+      actions.push({t:'fill', x:p.x, y:p.y, col:fillColor});
+      fctx.putImageData(fillData,0,0); render();
+    } else toast('線のないところを おしてね');
+    return;
+  }
+  if(tool === 'ruler'){
+    const a = snapTo(p), st = {t:'line', a, b:{...a}, col:penColor, w:3};
+    actions.push(st); cv.setPointerCapture(e.pointerId);
+    drag = {id:e.pointerId, kind:'ruler', st}; render(); return;
+  }
+  const g = geom(), R0 = 34 + (e.pointerType === 'touch' ? 6 : 0);
+  let kind = null;
+  if(dist(p,g.knob) < 30) kind = 'rot';
+  else if(dist(p,g.hinge) < 30) kind = 'move';
+  else if(dist(p,C.P) < R0) kind = 'P';
+  else if(dist(p,C.Q) < R0) kind = 'Q';
+  if(!kind) return;
+  cv.setPointerCapture(e.pointerId);
+  drag = {id:e.pointerId, kind, start:p, P0:{...C.P}, Q0:{...C.Q}, a0:ang(C.P,p), st:null};
+  if(kind === 'rot' && penOn && dist(C.P,C.Q) > 3){
+    drag.st = {t:'arc', c:{...C.P}, r:dist(C.P,C.Q), a0:ang(C.P,C.Q), sw:0, col:penColor, w:3};
+    actions.push(drag.st);
+  }
+  render();
+});
+cv.addEventListener('pointermove', e => {
+  if(!drag || e.pointerId !== drag.id) return;
+  const p = toLogical(e), dMax = 2*LEG - 4;
+  if(drag.kind === 'ruler'){ drag.st.b = snapTo(p); render(); return; }
+  if(drag.kind === 'rot'){
+    const d = dist(C.P,C.Q), cu = ang(C.P,C.Q);
+    const delta = norm(ang(C.P,drag.Q0) + (ang(C.P,p) - drag.a0) - cu);
+    C.Q = {x:C.P.x + Math.cos(cu+delta)*d, y:C.P.y + Math.sin(cu+delta)*d};
+    if(drag.st) drag.st.sw += delta;
+  } else if(drag.kind === 'Q'){
+    let q = snapTo(p); const v = {x:q.x-C.P.x, y:q.y-C.P.y}, l = Math.hypot(v.x,v.y);
+    if(l > dMax) q = {x:C.P.x+v.x/l*dMax, y:C.P.y+v.y/l*dMax};
+    C.Q = q;
+  } else {
+    const sp = snapTo({x:drag.P0.x + p.x - drag.start.x, y:drag.P0.y + p.y - drag.start.y});
+    C.Q = {x:drag.Q0.x + sp.x - drag.P0.x, y:drag.Q0.y + sp.y - drag.P0.y};
+    C.P = sp;
+  }
+  render();
+});
+function endDrag(e){
+  if(!drag || e.pointerId !== drag.id) return;
+  const st = drag.st; drag = null;
+  if(st){
+    const tiny = st.t === 'line' ? dist(st.a,st.b) < 8 : Math.abs(st.sw) < 0.03;
+    if(tiny) actions = actions.filter(x => x !== st);
+    else { rasterStroke(st); updateDerived(); }
+  }
+  render();
+}
+cv.addEventListener('pointerup', endDrag);
+cv.addEventListener('pointercancel', endDrag);
+cv.addEventListener('lostpointercapture', endDrag);
+
+// ================= ボタン =================
+const toastEl = document.getElementById('toast');
+let tt;
+function toast(m,ms){ toastEl.textContent = m; toastEl.classList.add('show'); clearTimeout(tt); tt = setTimeout(() => toastEl.classList.remove('show'), ms||2800); }
+function renderPal(){
+  const pal = document.getElementById('pal'); pal.innerHTML = '';
+  const list = tool === 'fill' ? FILL : PEN, cur = tool === 'fill' ? fillColor : penColor;
+  list.forEach(c => {
+    const b = document.createElement('button');
+    b.style.background = c || '#fff'; if(!c) b.textContent = '✕';
+    b.classList.toggle('on', c === cur);
+    b.onclick = () => { if(tool === 'fill') fillColor = c; else penColor = c; renderPal(); render(); };
+    pal.appendChild(b);
+  });
+}
+document.querySelectorAll('.tool').forEach(b => b.onclick = () => {
+  tool = b.dataset.tool;
+  document.querySelectorAll('.tool').forEach(x => x.classList.toggle('on', x === b));
+  document.getElementById('pen').style.display = tool === 'compass' ? '' : 'none';
+  renderPal(); resize();
+});
+const penB = document.getElementById('pen');
+penB.onclick = () => { penOn = !penOn; penB.classList.toggle('on', penOn); penB.textContent = penOn ? '✏️ 書く：ON' : '✏️ 書く：OFF'; };
+document.getElementById('snap').onclick = e => { snapOn = !snapOn; e.currentTarget.classList.toggle('on', snapOn); };
+const hintB = document.getElementById('hint');
+const HINTS = ['🎯 ヒント：なし','🎯 ヒント：しるし','🎯 ヒント：お手本'];
+hintB.onclick = () => { hintMode = (hintMode+1) % 3; hintB.textContent = HINTS[hintMode]; render(); };
+hintB.textContent = HINTS[hintMode];
+const cutB = document.getElementById('cut');
+cutB.onclick = () => { cutOn = !cutOn; cutB.classList.toggle('on', cutOn); rebuild(); render(); };
+const foldB = document.getElementById('fold'), menuEl = document.getElementById('menu');
+foldB.onclick = () => {
+  const hide = menuEl.style.display !== 'none';
+  menuEl.style.display = hide ? 'none' : 'contents';
+  foldB.textContent = hide ? '▼ メニューをひらく' : '▲ メニューをしまう';
+  resize();
+};
+document.getElementById('undo').onclick = () => {
+  if(!actions.length){ toast('もどすものがないよ'); return; }
+  actions.pop(); rebuild(); render();
+};
+document.getElementById('clear').onclick = () => {
+  if(actions.length && !confirm('かいた線を ぜんぶ消すよ。いいかな？')) return;
+  actions = []; rebuild(); render();
+};
+document.getElementById('home').onclick = () => { C.P = {x:80,y:600}; C.Q = {x:160,y:600}; render(); };
+document.getElementById('help').onclick = () => toast('①赤い針を ひかる印に さす ②黒いえんぴつ側で ひらきを きめる ③オレンジの↻を まわして円を かこう。青い✥で コンパスを はこべるよ。',7000);
+document.getElementById('save').onclick = () => {
+  const o = document.createElement('canvas'); o.width = FW; o.height = FH;
+  const c = o.getContext('2d'); c.fillStyle = '#fffdf6'; c.fillRect(0,0,FW,FH);
+  c.drawImage(fillCv,0,0); c.setTransform(F,0,0,F,0,0); drawGrid(c); drawStrokes(c);
+  o.toBlob(b => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'moyou.png'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); });
+};
+function load(i){
+  if(actions.length && !confirm('いまの絵は 消えるよ。いいかな？')) return;
+  sample = SAMPLES[i]; actions = []; cutOn = false; cutB.classList.remove('on');
+  cutB.style.display = sample && sample.frame ? '' : 'none';
+  [...document.querySelectorAll('#tabs button')].forEach((b,k) => b.classList.toggle('on', k === i));
+  celebrated = false; rebuild(); resize();
+}
+const tabs = document.getElementById('tabs');
+SAMPLES.forEach((sm,i) => { const b = document.createElement('button'); b.textContent = sm ? sm.name : '✨ じゆうに かく'; b.onclick = () => load(i); tabs.appendChild(b); });
+new ResizeObserver(resize).observe(bar);
+setInterval(render, 60);
+renderPal();
+load(0);
+})();
+</script>
+</body>
+</html>
